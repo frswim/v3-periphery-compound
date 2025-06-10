@@ -72,7 +72,8 @@ interface INonfungiblePositionManager is
             uint256 feeGrowthInside0LastX128,
             uint256 feeGrowthInside1LastX128,
             uint128 tokensOwed0,
-            uint128 tokensOwed1
+            uint128 tokensOwed1,
+            bool autoCompound
         );
 
     struct MintParams {
@@ -87,6 +88,8 @@ interface INonfungiblePositionManager is
         uint256 amount1Min;
         address recipient;
         uint256 deadline;
+        bool autoCompound; // New
+
     }
 
     /// @notice Creates a new position wrapped in a NFT

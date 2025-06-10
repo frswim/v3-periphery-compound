@@ -49,6 +49,8 @@ contract NonfungiblePositionManager is
         // how many uncollected tokens are owed to the position, as of the last computation
         uint128 tokensOwed0;
         uint128 tokensOwed1;
+        // auto-compound setting for the position
+        bool autoCompund;
     }
 
     /// @dev IDs of pools assigned by this contract
@@ -93,7 +95,9 @@ contract NonfungiblePositionManager is
             uint256 feeGrowthInside0LastX128,
             uint256 feeGrowthInside1LastX128,
             uint128 tokensOwed0,
-            uint128 tokensOwed1
+            uint128 tokensOwed1,
+            bool autoCompund
+
         )
     {
         Position memory position = _positions[tokenId];
@@ -111,7 +115,8 @@ contract NonfungiblePositionManager is
             position.feeGrowthInside0LastX128,
             position.feeGrowthInside1LastX128,
             position.tokensOwed0,
-            position.tokensOwed1
+            position.tokensOwed1,
+            position.autoCompund
         );
     }
 
@@ -175,7 +180,8 @@ contract NonfungiblePositionManager is
             feeGrowthInside0LastX128: feeGrowthInside0LastX128,
             feeGrowthInside1LastX128: feeGrowthInside1LastX128,
             tokensOwed0: 0,
-            tokensOwed1: 0
+            tokensOwed1: 0,
+            autoCompound: params.autoCompound
         });
 
         emit IncreaseLiquidity(tokenId, liquidity, amount0, amount1);
@@ -357,20 +363,65 @@ contract NonfungiblePositionManager is
                 params.amount1Max > tokensOwed1 ? tokensOwed1 : params.amount1Max
             );
 
-        // the actual amounts collected are returned
-        (amount0, amount1) = pool.collect(
-            recipient,
-            position.tickLower,
-            position.tickUpper,
-            amount0Collect,
-            amount1Collect
+        // the actual amounts collected are compounded or returned
+        if (position.autoCompound && (tokensOwed0 > 0 || tokensOwed1 > 0)) {
+            // continuous compound
+            (uint128 addedLiquidity, , ) = increaseLiquidityInternal(
+                position,
+                pool,
+                uint128(tokensOwed0),
+                uint128(tokensOwed1)
+            );
+            position.tokensOwed0 = 0;
+            position.tokensOwed1 = 0;
+
+            emit IncreaseLiquidity(params.tokenId, addedLiquidity, tokensOwed0, tokensOwed1);
+        } 
+        else {
+            // returned collected
+            (amount0, amount1) = pool.collect(
+                recipient,
+                position.tickLower,
+                position.tickUpper,
+                amount0Collect,
+                amount1Collect
+            );
+            // sometimes there will be a few less wei than expected due to rounding down in core, but we just subtract the full amount expected
+            // instead of the actual amount so we can burn the token
+            (position.tokensOwed0, position.tokensOwed1) = (tokensOwed0 - amount0Collect, tokensOwed1 - amount1Collect);
+
+            emit Collect(params.tokenId, recipient, amount0Collect, amount1Collect);
+        }
+    }
+    
+    function increaseLiquidityInternal(
+        Position storage position,
+        IUniswapV3Pool pool,
+        uint128 amount0,
+        uint128 amount1
+    ) internal returns (uint128 liquidity, uint256 amount0Used, uint256 amount1Used) {
+        PoolAddress.PoolKey memory poolKey = _poolIdToPoolKey[position.poolId];
+
+        (liquidity, amount0Used, amount1Used, ) = addLiquidity(
+            AddLiquidityParams({
+                token0: poolKey.token0,
+                token1: poolKey.token1,
+                fee: poolKey.fee,
+                tickLower: position.tickLower,
+                tickUpper: position.tickUpper,
+                amount0Desired: amount0,
+                amount1Desired: amount1,
+                amount0Min: 0,
+                amount1Min: 0,
+                recipient: address(this)
+            })
         );
 
-        // sometimes there will be a few less wei than expected due to rounding down in core, but we just subtract the full amount expected
-        // instead of the actual amount so we can burn the token
-        (position.tokensOwed0, position.tokensOwed1) = (tokensOwed0 - amount0Collect, tokensOwed1 - amount1Collect);
+        position.liquidity += liquidity;
+    }
 
-        emit Collect(params.tokenId, recipient, amount0Collect, amount1Collect);
+    function setAutoCompound(uint256 tokenId, bool enable) external isAuthorizedForToken(tokenId) {
+        _positions[tokenId].autoCompound = enable;
     }
 
     /// @inheritdoc INonfungiblePositionManager
